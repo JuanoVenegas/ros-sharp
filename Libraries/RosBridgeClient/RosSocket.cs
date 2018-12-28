@@ -17,8 +17,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Bson;
 using RosSharp.RosBridgeClient.Protocols;
 
 namespace RosSharp.RosBridgeClient
@@ -27,13 +29,15 @@ namespace RosSharp.RosBridgeClient
     {
         public IProtocol protocol;
 
+        private static bool bson_only_mode = false;
         private Dictionary<string, Publisher> Publishers = new Dictionary<string, Publisher>();
         private Dictionary<string, Subscriber> Subscribers = new Dictionary<string, Subscriber>();
         private Dictionary<string, ServiceProvider> ServiceProviders = new Dictionary<string, ServiceProvider>();
         private Dictionary<string, ServiceConsumer> ServiceConsumers = new Dictionary<string, ServiceConsumer>();
 
-        public RosSocket(IProtocol protocol)
+        public RosSocket(IProtocol protocol, bool bson_only_mode = false)
         {
+            RosSocket.bson_only_mode = bson_only_mode;
             this.protocol = protocol;
             this.protocol.OnReceive += (sender, e) => Receive(sender, e);
             this.protocol.Connect();
@@ -178,14 +182,46 @@ namespace RosSharp.RosBridgeClient
 
         private static byte[] Serialize<T>(T obj)
         {
-            string json = JsonConvert.SerializeObject(obj);
-            return Encoding.ASCII.GetBytes(json);
+            if (!RosSocket.bson_only_mode)
+            {
+                string json = JsonConvert.SerializeObject(obj);
+                return Encoding.ASCII.GetBytes(json);
+            }
+            else
+            {
+                // BSON version
+                // https://www.newtonsoft.com/json/help/html/SerializeToBson.htm
+                // https://github.com/JamesNK/Newtonsoft.Json/issues/1277
+                MemoryStream ms = new MemoryStream();
+                using (BsonDataWriter writer = new BsonDataWriter(ms))
+                {
+                    JsonSerializer serializer = new JsonSerializer();
+                    serializer.Serialize(writer, obj);
+                }
+                return ms.ToArray();
+            }
         }
 
         private static T Deserialize<T>(byte[] buffer)
         {
-            string ascii = Encoding.ASCII.GetString(buffer, 0, buffer.Length);
-            return JsonConvert.DeserializeObject<T>(ascii);
+            if (!RosSocket.bson_only_mode)
+            {
+                string ascii = Encoding.ASCII.GetString(buffer, 0, buffer.Length);
+                return JsonConvert.DeserializeObject<T>(ascii);
+            }
+            else
+            {
+                // BSON version
+                // https://www.newtonsoft.com/json/help/html/DeserializeFromBson.htm
+                T obj = default(T);
+                MemoryStream ms = new MemoryStream(buffer);
+                using (BsonDataReader reader = new BsonDataReader(ms))
+                {
+                    JsonSerializer serializer = new JsonSerializer();
+                    obj = serializer.Deserialize<T>(reader);
+                }
+                return obj;
+            }
         }
 
         private static string GetUnusedCounterID<T>(Dictionary<string, T> dictionary, string name)
